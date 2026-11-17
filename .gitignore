@@ -5,3 +5,5 @@ venv/
 .pytest_cache/
 .streamlit/secrets.toml
 .DS_Store
+*.json
+!.streamlit/config.toml

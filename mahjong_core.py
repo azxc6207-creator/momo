@@ -128,7 +128,14 @@ class Game:
 
     # ---------- 結算 ----------
     def calc_win(self, winner: int, kind: str, hand_tai: int,
-                 discarder: int | None = None) -> dict:
+                 discarder: int | None = None,
+                 amount_override: dict | None = None) -> dict:
+        """計算一把的各家應付金額。
+
+        amount_override: {付款人座位: 手動金額}，只會取代該付款人的金額，
+        台數仍照規則計算（僅供紀錄參考）。
+        """
+        override = {int(k): int(v) for k, v in (amount_override or {}).items()}
         if kind == "自摸":
             payers = [i for i in range(4) if i != winner]
         elif kind == "放槍":
@@ -143,8 +150,13 @@ class Game:
             involved = self.dealer in (winner, p)
             tai = hand_tai + (self.dealer_bonus_tai() if involved else 0)
             amount = self.rules.base + tai * self.rules.tai_value
+            manual = p in override
+            if manual:
+                if override[p] < 0:
+                    raise ValueError("手動金額不能是負數")
+                amount = override[p]
             payments.append({"payer": p, "tai": tai, "amount": amount,
-                             "dealer_involved": involved})
+                             "dealer_involved": involved, "manual": manual})
         deltas = [0, 0, 0, 0]
         for pay in payments:
             deltas[pay["payer"]] -= pay["amount"]
@@ -167,8 +179,9 @@ class Game:
 
     # ---------- 登記 ----------
     def apply_win(self, winner: int, kind: str, hand_tai: int,
-                  discarder: int | None = None, items: list | None = None) -> dict:
-        result = self.calc_win(winner, kind, hand_tai, discarder)
+                  discarder: int | None = None, items: list | None = None,
+                  amount_override: dict | None = None) -> dict:
+        result = self.calc_win(winner, kind, hand_tai, discarder, amount_override)
         entry = {
             "type": "win", "hand_no": self.hand_no, "label": self.round_label(),
             "dealer": self.dealer, "streak": self.streak,
@@ -202,6 +215,50 @@ class Game:
         self.history.append(entry)
         return entry
 
+    def apply_adjust(self, deltas: list, note: str = "") -> dict:
+        """手動調整積分（不影響莊家、連莊與局數，可用「復原」取消）。"""
+        deltas = [int(x) for x in deltas]
+        if len(deltas) != 4:
+            raise ValueError("需要 4 位玩家的調整值")
+        if not any(deltas):
+            raise ValueError("調整值全為 0")
+        entry = {
+            "type": "adjust", "hand_no": self.hand_no, "label": self.round_label(),
+            "dealer": self.dealer, "streak": self.streak,
+            "deltas": deltas, "note": note, "before": self._snapshot(),
+        }
+        for i in range(4):
+            self.scores[i] += deltas[i]
+        self.history.append(entry)
+        return entry
+
+    def reseat(self, order: list) -> None:
+        """換座位。order[k] = 新的第 k 個座位原本是哪一位玩家（舊座位編號）。
+
+        座位順序即輪莊順序，所以莊家、積分與所有歷史紀錄中的座位編號都會一併重新對應，
+        因此換座位後仍可正確復原。
+        """
+        if sorted(order) != [0, 1, 2, 3]:
+            raise ValueError("座位必須是 4 位不同的玩家")
+        inv = {old: new for new, old in enumerate(order)}
+
+        def permute(seq):
+            return [seq[old] for old in order]
+
+        self.players = permute(self.players)
+        self.scores = permute(self.scores)
+        self.dealer = inv[self.dealer]
+        for h in self.history:
+            h["dealer"] = inv[h["dealer"]]
+            h["deltas"] = permute(h["deltas"])
+            h["before"]["dealer"] = inv[h["before"]["dealer"]]
+            if h.get("winner") is not None:
+                h["winner"] = inv[h["winner"]]
+            if h.get("discarder") is not None:
+                h["discarder"] = inv[h["discarder"]]
+            for pay in h.get("payments", []):
+                pay["payer"] = inv[pay["payer"]]
+
     def undo(self) -> bool:
         if not self.history:
             return False
@@ -215,8 +272,29 @@ class Game:
         return True
 
     # ---------- 存讀檔 ----------
-    def to_json(self) -> str:
-        return json.dumps(asdict(self), ensure_ascii=False, indent=2)
+    def to_json(self, indent: int | None = 2) -> str:
+        return json.dumps(asdict(self), ensure_ascii=False, indent=indent)
+
+    def history_rows(self) -> list:
+        """每把紀錄，一把一個 dict（欄位：把、局、莊家、連莊、結果、各玩家輸贏）。"""
+        rows = []
+        for h in self.history:
+            if h["type"] == "win":
+                how = ("自摸" if h["kind"] == "自摸"
+                       else f"{self.players[h['discarder']]} 放槍")
+                manual = "，手動金額" if any(p.get("manual") for p in h["payments"]) else ""
+                result = f"{self.players[h['winner']]} {how}（牌型 {h['hand_tai']} 台{manual}）"
+            elif h["type"] == "adjust":
+                result = "手動調整積分" + (f"：{h['note']}" if h.get("note") else "")
+            else:
+                result = "流局"
+            row = {"把": h["hand_no"], "局": h["label"],
+                   "莊家": self.players[h["dealer"]], "連莊": h["streak"],
+                   "結果": result}
+            for i, name in enumerate(self.players):
+                row[name] = h["deltas"][i]
+            rows.append(row)
+        return rows
 
     @classmethod
     def from_json(cls, text: str) -> "Game":
