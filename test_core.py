@@ -1,4 +1,6 @@
-from mahjong_core import Game, Rules, compute_hand_tai, DEFAULT_TAI_TABLE
+import json
+
+from mahjong_core import Game, Rules, compute_hand_tai, DEFAULT_TAI_TABLE, settlement
 
 TABLE = {r["名稱"]: r["台數"] for r in DEFAULT_TAI_TABLE}
 NAMES = ["A", "B", "C", "D"]
@@ -63,7 +65,7 @@ def test_wind_round_rollover_and_undo():
     for i in range(4):
         g.apply_win((g.dealer + 1) % 4, "自摸", 0)
     assert g.wind_round == 1 and g.dealer == 0 and g.dealer_turns == 0
-    assert g.round_label() == "南風東局"
+    assert g.round_label() == "南圈東風"
     for _ in range(4):
         assert g.undo()
     assert g.scores == [0, 0, 0, 0] and g.wind_round == 0 and g.hand_no == 1
@@ -168,3 +170,85 @@ def test_reseat_rejects_bad_order():
     else:
         raise AssertionError("重複座位應被拒絕")
     assert g.players == NAMES
+
+
+def _play_mixed_game():
+    g = new()
+    g.apply_win(0, "自摸", 3)                       # A 莊家自摸
+    g.apply_win(1, "放槍", 2, discarder=0)           # B 胡 A 放槍 → 換莊
+    g.apply_win(2, "放槍", 1, discarder=1)           # C 胡 B 放槍
+    g.apply_draw()
+    g.apply_adjust([0, 0, -40, 40], "補差額")
+    g.apply_win(3, "自摸", 4)
+    return g
+
+
+def test_stats_counts_and_amounts():
+    g = _play_mixed_game()
+    s = g.stats()
+    assert [r["zimo"] for r in s] == [1, 0, 0, 1]
+    assert [r["ron"] for r in s] == [0, 1, 1, 0]
+    assert [r["discard"] for r in s] == [1, 1, 0, 0]
+    assert s[0]["hands"] == 5 and s[0]["wins"] == 1 and s[1]["wins"] == 1
+    # 恆等式：淨額 = 各項加減 + 手動調整，且等於累計積分
+    for i, r in enumerate(s):
+        assert r["net"] == (r["zimo_amt"] + r["ron_amt"] - r["discard_amt"]
+                            - r["zimo_paid_amt"] + r["adjust"])
+        assert r["net"] == g.scores[i]
+    assert s[2]["adjust"] == -40 and s[3]["adjust"] == 40
+    # A 自摸 3 台（莊家 +1 台）：每家付 100 + 4*20 = 180，共贏 540
+    assert s[0]["zimo_amt"] == 540
+    assert sum(r["zimo_paid"] for r in s) == 6            # 兩把自摸，各 3 家付
+
+
+def test_jiang_advances_after_north_round_and_undo():
+    g = new()
+    assert g.jiang == 1
+    for _ in range(16):                      # 每把都讓閒家胡 → 每把換莊，16 把走完四圈
+        g.apply_win((g.dealer + 1) % 4, "自摸", 0)
+    assert g.jiang == 2 and g.wind_round == 0 and g.dealer_turns == 0
+    assert g.round_label() == "東圈東風"
+    g.apply_win((g.dealer + 1) % 4, "自摸", 0)
+    assert g.history[-1]["jiang"] == 2 and g.history[0]["jiang"] == 1
+    # 第 2 將只有最後一把；本將積分與累計不同
+    assert g.scope_scores(2) == g.history[-1]["deltas"]
+    assert g.scope_scores(None) == g.scores
+    assert sum(g.scope_scores(1)) == 0
+    assert g.stats(2)[0]["hands"] == 1 and g.stats()[0]["hands"] == 17
+    # 復原回到第 1 將的最後一把
+    g.undo()
+    assert g.undo() and g.jiang == 1 and g.round_label() == "北圈北風"
+
+
+def test_trend_matches_scores():
+    g = _play_mixed_game()
+    t = g.trend()
+    assert t[0] == [0, 0, 0, 0] and len(t) == len(g.history) + 1
+    assert t[-1] == g.scores
+
+
+def test_settlement_minimal_transfers():
+    pay = settlement([125, 35, 0, -160])
+    assert sum(a for _, _, a in pay) == 160
+    got = [0, 0, 0, 0]
+    for p, r, a in pay:
+        got[p] -= a
+        got[r] += a
+    assert got == [125, 35, 0, -160]
+    assert len(pay) == 2                       # 兩個贏家，最多 2 筆轉帳
+    assert settlement([0, 0, 0, 0]) == []
+    assert settlement([50, -50, 0, 0]) == [(1, 0, 50)]
+
+
+def test_old_save_without_new_fields_still_loads():
+    g = _play_mixed_game()
+    d = json.loads(g.to_json())
+    for k in ("no", "created", "jiang"):
+        d.pop(k)
+    for h in d["history"]:
+        h.pop("jiang")
+        h["before"].pop("jiang")
+    old = Game.from_json(json.dumps(d))
+    assert old.no == 1 and old.jiang == 1 and old.created == ""
+    assert old.stats()[0]["zimo"] == 1 and old.scope_scores(1) == old.scores
+    assert old.undo() and old.jiang == 1

@@ -93,6 +93,28 @@ def check_conflicts(selected: list[str], kind: str) -> list[str]:
     return msgs
 
 
+def settlement(scores: list) -> list:
+    """最少轉帳次數的結算：回傳 [(付款人座位, 收款人座位, 金額), ...]。
+
+    贏的人收錢、輸的人付錢，每次都讓目前欠最多的人付給贏最多的人。
+    若各家積分加總不為 0（例如手動調整過），多出的差額無法對應，會被忽略。
+    """
+    creditors = sorted(([i, s] for i, s in enumerate(scores) if s > 0), key=lambda x: -x[1])
+    debtors = sorted(([i, -s] for i, s in enumerate(scores) if s < 0), key=lambda x: -x[1])
+    out = []
+    ci = di = 0
+    while ci < len(creditors) and di < len(debtors):
+        pay = min(creditors[ci][1], debtors[di][1])
+        out.append((debtors[di][0], creditors[ci][0], pay))
+        creditors[ci][1] -= pay
+        debtors[di][1] -= pay
+        if creditors[ci][1] == 0:
+            ci += 1
+        if debtors[di][1] == 0:
+            di += 1
+    return out
+
+
 @dataclass
 class Game:
     players: list
@@ -104,6 +126,9 @@ class Game:
     hand_no: int = 1
     scores: list = None
     history: list = field(default_factory=list)
+    no: int = 1             # 牌局編號
+    created: str = ""       # 建立日期（YYYY-MM-DD）
+    jiang: int = 1          # 第幾將：北圈結束、回到東圈時進入下一將
 
     def __post_init__(self):
         if len(self.players) != 4:
@@ -117,7 +142,8 @@ class Game:
         return WINDS[(i - self.dealer) % 4]
 
     def round_label(self) -> str:
-        return f"{WINDS[self.wind_round]}風{WINDS[self.dealer_turns]}局"
+        """例：西圈南風（圈風西，第二位莊家）。"""
+        return f"{WINDS[self.wind_round]}圈{WINDS[self.dealer_turns]}風"
 
     def effective_streak(self) -> int:
         cap = self.rules.streak_cap
@@ -171,11 +197,14 @@ class Game:
         if self.dealer_turns >= 4:
             self.dealer_turns = 0
             self.wind_round = (self.wind_round + 1) % 4
+            if self.wind_round == 0:
+                self.jiang += 1
 
     def _snapshot(self) -> dict:
         return {"dealer": self.dealer, "streak": self.streak,
                 "wind_round": self.wind_round,
-                "dealer_turns": self.dealer_turns, "hand_no": self.hand_no}
+                "dealer_turns": self.dealer_turns, "hand_no": self.hand_no,
+                "jiang": self.jiang}
 
     # ---------- 登記 ----------
     def apply_win(self, winner: int, kind: str, hand_tai: int,
@@ -184,7 +213,7 @@ class Game:
         result = self.calc_win(winner, kind, hand_tai, discarder, amount_override)
         entry = {
             "type": "win", "hand_no": self.hand_no, "label": self.round_label(),
-            "dealer": self.dealer, "streak": self.streak,
+            "jiang": self.jiang, "dealer": self.dealer, "streak": self.streak,
             "winner": winner, "kind": kind, "discarder": discarder,
             "hand_tai": hand_tai, "items": items or [],
             "payments": result["payments"], "deltas": result["deltas"],
@@ -203,7 +232,7 @@ class Game:
     def apply_draw(self) -> dict:
         entry = {
             "type": "draw", "hand_no": self.hand_no, "label": self.round_label(),
-            "dealer": self.dealer, "streak": self.streak,
+            "jiang": self.jiang, "dealer": self.dealer, "streak": self.streak,
             "deltas": [0, 0, 0, 0], "before": self._snapshot(),
         }
         if self.rules.draw_keep_dealer:
@@ -224,7 +253,7 @@ class Game:
             raise ValueError("調整值全為 0")
         entry = {
             "type": "adjust", "hand_no": self.hand_no, "label": self.round_label(),
-            "dealer": self.dealer, "streak": self.streak,
+            "jiang": self.jiang, "dealer": self.dealer, "streak": self.streak,
             "deltas": deltas, "note": note, "before": self._snapshot(),
         }
         for i in range(4):
@@ -269,7 +298,77 @@ class Game:
         self.dealer, self.streak = b["dealer"], b["streak"]
         self.wind_round, self.dealer_turns = b["wind_round"], b["dealer_turns"]
         self.hand_no = b["hand_no"]
+        self.jiang = b.get("jiang", self.jiang)   # 舊存檔沒有這個欄位
         return True
+
+    # ---------- 統計 ----------
+    def _in_scope(self, h: dict, jiang: int | None) -> bool:
+        return jiang is None or h.get("jiang", 1) == jiang
+
+    def scope_scores(self, jiang: int | None = None) -> list:
+        """累計積分（jiang=None）或指定那一將內的積分。"""
+        if jiang is None:
+            return list(self.scores)
+        out = [0, 0, 0, 0]
+        for h in self.history:
+            if self._in_scope(h, jiang):
+                for i in range(4):
+                    out[i] += h["deltas"][i]
+        return out
+
+    def hands_played(self, jiang: int | None = None) -> int:
+        """已完成的局數（胡牌＋流局，不含手動調整）。"""
+        return sum(1 for h in self.history
+                   if h["type"] in ("win", "draw") and self._in_scope(h, jiang))
+
+    def stats(self, jiang: int | None = None) -> list:
+        """每位玩家的戰績與金額（依座位順序）。
+
+        zimo／ron／discard：自摸次數、放槍胡牌次數（別人放槍給你）、放槍次數。
+        *_amt：對應的金額。zimo_paid：被別人自摸的次數與金額。adjust：手動調整。
+        恆等式：net = zimo_amt + ron_amt - discard_amt - zimo_paid_amt + adjust。
+        """
+        keys = ("zimo", "zimo_amt", "ron", "ron_amt", "discard", "discard_amt",
+                "zimo_paid", "zimo_paid_amt", "adjust", "net")
+        res = [dict.fromkeys(keys, 0) for _ in range(4)]
+        for h in self.history:
+            if not self._in_scope(h, jiang):
+                continue
+            for i in range(4):
+                res[i]["net"] += h["deltas"][i]
+            if h["type"] == "adjust":
+                for i in range(4):
+                    res[i]["adjust"] += h["deltas"][i]
+            elif h["type"] == "win":
+                w = h["winner"]
+                total = sum(p["amount"] for p in h["payments"])
+                if h["kind"] == "自摸":
+                    res[w]["zimo"] += 1
+                    res[w]["zimo_amt"] += total
+                    for p in h["payments"]:
+                        res[p["payer"]]["zimo_paid"] += 1
+                        res[p["payer"]]["zimo_paid_amt"] += p["amount"]
+                else:
+                    res[w]["ron"] += 1
+                    res[w]["ron_amt"] += total
+                    d = h["discarder"]
+                    res[d]["discard"] += 1
+                    res[d]["discard_amt"] += total
+        hands = self.hands_played(jiang)
+        for r in res:
+            r["hands"] = hands
+            r["wins"] = r["zimo"] + r["ron"]
+        return res
+
+    def trend(self, jiang: int | None = None) -> list:
+        """每一筆紀錄之後的累計積分（第一列為起點 0），用來畫走勢圖。"""
+        cur = [0, 0, 0, 0]
+        rows = [list(cur)]
+        for h in self.history:
+            if self._in_scope(h, jiang):
+                cur = [cur[i] + h["deltas"][i] for i in range(4)]
+                rows.append(list(cur))
+        return rows
 
     # ---------- 存讀檔 ----------
     def to_json(self, indent: int | None = 2) -> str:
