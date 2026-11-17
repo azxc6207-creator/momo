@@ -1,4 +1,5 @@
-from cloud_store import CHUNK, LOG_SHEET, STATE_SHEET, SheetsStore, connect
+from cloud_store import (ARCHIVE_HEADER, ARCHIVE_SHEET, CHUNK, DETAIL_HEADER, DETAIL_SHEET,
+                         LOG_SHEET, STATE_SHEET, SheetsStore, archive_tables, connect)
 from mahjong_core import Game, Rules
 
 
@@ -83,3 +84,38 @@ def test_game_json_compact_roundtrip():
 def test_connect_without_secrets_is_disabled():
     assert connect({}) is None
     assert connect({"gsheet": {"spreadsheet": "x"}}) is None   # 缺金鑰
+
+
+def _archived(no, players):
+    g = Game(players=players, rules=Rules(), no=no, created="2026-11-17")
+    g.apply_win(1, "自摸", 2)
+    g.apply_win(2, "放槍", 1, discarder=0)
+    g.apply_draw()
+    return {"no": no, "created": g.created, "hands": g.hands_played(),
+            "players": g.players, "scores": g.scores, "game": g.to_json(indent=None)}, g
+
+
+def test_archive_tables_shape_and_numbers():
+    e1, g1 = _archived(1, ["A", "B", "C", "D"])
+    e2, g2 = _archived(2, ["E", "F", "G", "H"])
+    per_player, per_hand = archive_tables([e1, e2, {"no": 3, "game": "壞掉的資料"}])
+    assert per_player[0] == ARCHIVE_HEADER and per_hand[0] == DETAIL_HEADER
+    assert len(per_player) == 1 + 8                      # 損毀的牌局被略過
+    assert len(per_hand) == 1 + 3 + 3
+    row_b = per_player[2]                                # 牌局 1 的 B
+    assert row_b[:4] == [1, "2026-11-17", 3, "B"] and row_b[4] == g1.scores[1]
+    assert row_b[5] == 1                                 # B 自摸 1 次
+    assert all(len(r) == len(ARCHIVE_HEADER) for r in per_player)
+    assert all(len(r) == len(DETAIL_HEADER) for r in per_hand)
+    first_hand = per_hand[1]
+    assert first_hand[0] == 1 and first_hand[6] == "A" and first_hand[7] == g1.history[0]["deltas"][0]
+
+
+def test_save_archive_views_writes_and_clears():
+    store = SheetsStore(FakeSpreadsheet())
+    e1, _ = _archived(1, ["A", "B", "C", "D"])
+    store.save_archive_views([e1])
+    assert len(store.sh.sheets[ARCHIVE_SHEET].rows) == 5
+    assert len(store.sh.sheets[DETAIL_SHEET].rows) == 4
+    store.save_archive_views([])                          # 全部刪除 → 兩頁清空
+    assert store.sh.sheets[ARCHIVE_SHEET].rows == [] and store.sh.sheets[DETAIL_SHEET].rows == []

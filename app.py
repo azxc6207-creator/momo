@@ -44,6 +44,21 @@ CSS = """
 }
 .stButton button, .stDownloadButton button { width: 100%; min-height: 2.75rem; }
 
+/* 點擊縮放：按下去縮小一點，放開時回彈 */
+.stButton button, .stDownloadButton button {
+    transition: transform 0.14s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.14s ease !important;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+    will-change: transform;
+}
+.stButton button:active, .stDownloadButton button:active { transform: scale(0.94) !important; }
+.st-key-seat_board .stButton button:active { transform: scale(0.95) !important; box-shadow: inset 0 0 0 2px rgba(47, 107, 58, 0.35) !important; }
+.st-key-toolbar .stButton button:active { transform: scale(0.9) !important; }
+.st-key-seat_board .st-key-btn_mode button:active { transform: scale(0.9) !important; }
+@media (prefers-reduced-motion: reduce) {
+    .stButton button, .stDownloadButton button { transition: none !important; }
+}
+
 /* 分頁列：平均分配寬度 */
 .stTabs [data-baseweb="tab-list"] { gap: 0; }
 .stTabs [data-baseweb="tab"] { flex: 1; justify-content: center; padding: 0.5rem 0.2rem; }
@@ -314,6 +329,47 @@ def load_game():
     flash("success", "已載入牌局。")
 
 
+# ------------------------------------------------------------------ 全部資料備份
+BACKUP_APP = "taiwan-mahjong-scorer"
+
+
+def backup_bytes() -> bytes:
+    data = collect_state()
+    data.pop("views_sig", None)
+    payload = {"app": BACKUP_APP, "version": 1, "saved": today_str(), **data}
+    return json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+
+
+def load_backup():
+    """還原全部備份。先完整驗證檔案，確定可用才覆蓋目前資料。"""
+    up = ss.get("backup_upload")
+    if up is None:
+        flash("error", "請先選擇備份檔。")
+        return
+    try:
+        data = json.loads(up.getvalue().decode("utf-8"))
+        if not isinstance(data, dict) or data.get("app") != BACKUP_APP:
+            raise ValueError("不是本程式的備份檔")
+        data = {k: v for k, v in data.items() if k in ("game", "archive", "roster", "rules", "tai_table")}
+        if data.get("game"):
+            Game.from_json(data["game"])
+        for k in ("archive", "rules", "tai_table"):
+            if data.get(k):
+                json.loads(data[k])
+    except Exception:
+        flash("error", "還原失敗：請確認是「下載全部資料備份」匯出的 JSON，目前資料沒有被改動。")
+        return
+    ss["game"] = None
+    ss["archive"] = []
+    ss.pop("tai_editor", None)
+    restore_state(data)
+    ss["_views_sig"] = "stale"          # 讓雲端的「過去牌局」報表重新寫入
+    ss["view_rot"] = 0
+    ss["swap_sel"] = None
+    ss["backup_ok"] = False
+    flash("success", "已還原全部備份。")
+
+
 # ------------------------------------------------------------------ 雲端存檔（Google 試算表）
 TAI_COLUMNS = ["名稱", "台數", "說明"]
 
@@ -348,6 +404,7 @@ def collect_state() -> dict:
         "roster": ss["roster_text"],
         "rules": json.dumps({k: ss[k] for k in RULE_DEFAULTS}),
         "tai_table": json.dumps(tai_records(ss["tai_current"]), ensure_ascii=False),
+        "views_sig": ss.get("_views_sig", ""),   # 「過去牌局」報表上次寫入時對應的資料版本
     }
 
 
@@ -361,6 +418,7 @@ def restore_state(data: dict) -> bool:
     回傳 True 表示有把舊版資料搬到新格式，需要立刻存回雲端。
     """
     migrated = False
+    ss["_views_sig"] = data.get("views_sig", "")
     if data.get("roster"):
         ss["roster_text"] = data["roster"]
     if data.get("rules"):
@@ -419,9 +477,19 @@ def autosave(store, status, store_error=""):
             st.button("重新連線雲端", on_click=retry_cloud)
         return
 
+    notes = []
+    # 已結束的牌局變動時，重寫「過去牌局」「過去明細」兩個給人看的分頁；失敗下次再試
+    views_target = (hashlib.sha256(json.dumps(ss["archive"], sort_keys=True).encode("utf-8")).hexdigest()
+                    if ss["archive"] else "")
+    if views_target != ss.get("_views_sig", ""):
+        try:
+            store.save_archive_views(ss["archive"])
+            ss["_views_sig"] = views_target
+        except Exception as e:
+            notes.append(f"（「過去牌局」分頁更新失敗：{e}）")
+
     data = collect_state()
     sig = state_signature(data)
-    notes = []
     if sig != ss.get("_saved_sig"):
         try:
             store.save_all(data)
@@ -700,12 +768,21 @@ with tab_settings:
     ss["tai_current"] = edited
     st.button("還原預設台數表", on_click=reset_tai_table)
 
-    st.subheader("備份")
+    st.subheader("備份與還原")
+    st.caption("全部資料備份包含：玩家名單、規則、台數表、進行中牌局與過去牌局。"
+               "換手機、重新部署或沒有設定雲端存檔時，用它就能把設定和各局數據帶走。")
+    st.download_button("下載全部資料備份 (JSON)", backup_bytes(),
+                       f"mahjong_backup_{today_str()}.json", "application/json")
+    st.file_uploader("選擇全部資料備份檔", type="json", key="backup_upload")
+    backup_ok = st.checkbox("我知道這會覆蓋目前所有資料", key="backup_ok")
+    st.button("還原全部備份", on_click=load_backup, disabled=not backup_ok)
+
+    st.subheader("單一牌局存檔")
     cur_game = ss["game"]
     if cur_game is not None:
         st.download_button("下載目前牌局存檔 (JSON)", cur_game.to_json().encode("utf-8"),
                            f"mahjong_game_{cur_game.no}.json", "application/json")
-    st.file_uploader("載入先前下載的 JSON", type="json", key="upload")
+    st.file_uploader("載入先前下載的單一牌局 JSON", type="json", key="upload")
     st.button("載入", on_click=load_game)
 
 tai_table = tai_table_from_df(ss["tai_current"])

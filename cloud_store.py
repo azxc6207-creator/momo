@@ -2,8 +2,10 @@
 
 - 「mahjong_state」分頁：app 自動讀寫的資料（牌局、玩家名單、規則、台數表）。
   Google 試算表單一儲存格上限約 5 萬字元，所以長資料會自動切成多列。
-- 「牌局紀錄」分頁：給人看的每把輸贏表，每次存檔時重新寫入。
-  這一頁只是輸出，在試算表裡修改不會回到 app。
+- 「牌局紀錄」分頁：進行中牌局每把的輸贏表，每次存檔時重新寫入。
+- 「過去牌局」分頁：已結束的牌局，每位玩家一列（淨額、自摸／胡牌／放槍次數與金額）。
+- 「過去明細」分頁：已結束的牌局，每一把一列。
+  這三頁只是給人看的輸出，在試算表裡修改不會回到 app。
 """
 from __future__ import annotations
 
@@ -12,7 +14,38 @@ from mahjong_core import Game
 CHUNK = 40000
 STATE_SHEET = "mahjong_state"
 LOG_SHEET = "牌局紀錄"
+ARCHIVE_SHEET = "過去牌局"
+DETAIL_SHEET = "過去明細"
 STATE_HEADER = ["key", "chunk", "data"]
+
+ARCHIVE_HEADER = ["牌局", "日期", "局數", "玩家", "淨額", "自摸", "胡牌", "放槍",
+                  "自摸金額", "胡牌金額", "放槍金額"]
+DETAIL_HEADER = (["牌局", "把", "局", "莊家", "連莊", "結果"]
+                 + [x for i in range(1, 5) for x in (f"玩家{i}", f"輸贏{i}")])
+
+
+def archive_tables(archive: list) -> tuple:
+    """把歸檔的牌局整理成兩張表：(每位玩家一列, 每把一列)。損毀的牌局會略過。"""
+    per_player = [ARCHIVE_HEADER]
+    per_hand = [DETAIL_HEADER]
+    for e in archive:
+        try:
+            g = Game.from_json(e["game"])
+        except Exception:
+            continue
+        no = e.get("no", g.no)
+        stats = g.stats()
+        for i, name in enumerate(g.players):
+            s = stats[i]
+            per_player.append([no, e.get("created", g.created), s["hands"], name, g.scores[i],
+                               s["zimo"], s["ron"], s["discard"],
+                               s["zimo_amt"], s["ron_amt"], s["discard_amt"]])
+        for r in g.history_rows():
+            row = [no, r["把"], r["局"], r["莊家"], r["連莊"], r["結果"]]
+            for i, name in enumerate(g.players):
+                row += [name, r[name]]
+            per_hand.append(row)
+    return per_player, per_hand
 
 
 class SheetsStore:
@@ -49,6 +82,15 @@ class SheetsStore:
         ws = self._worksheet(STATE_SHEET)
         ws.clear()
         ws.update(values=rows, range_name="A1", raw=True)
+
+    def save_archive_views(self, archive: list) -> None:
+        """把已結束的牌局寫到「過去牌局」「過去明細」兩個分頁（整頁重寫）。"""
+        per_player, per_hand = archive_tables(archive)
+        for title, rows in ((ARCHIVE_SHEET, per_player), (DETAIL_SHEET, per_hand)):
+            ws = self._worksheet(title)
+            ws.clear()
+            if len(rows) > 1:
+                ws.update(values=rows, range_name="A1", raw=True)
 
     def save_log(self, game: Game | None) -> None:
         """把每把紀錄與目前積分寫到「牌局紀錄」分頁。"""
