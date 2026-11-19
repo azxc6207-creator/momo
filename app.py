@@ -7,11 +7,13 @@ from datetime import datetime, timedelta, timezone
 import pandas as pd
 import streamlit as st
 
-from cloud_store import connect
+from cloud_store import connect, sheet_url
 from mahjong_core import (DEFAULT_TAI_TABLE, WINDS, ZIMO, Game, Rules, check_conflicts,
                           compute_hand_tai, settlement)
+from theme import CHART_COLORS, GOLD, build_css, num_html
 
-st.set_page_config(page_title="台灣麻將計台器", page_icon="🀄", layout="centered")
+APP_TITLE = "鼠家麻將欸波"
+st.set_page_config(page_title=f"🏠 {APP_TITLE}", page_icon="🏠", layout="centered")
 
 RULE_DEFAULTS = asdict(Rules())
 ss = st.session_state
@@ -20,86 +22,8 @@ ss = st.session_state
 POS_NAMES = {0: "下", 1: "右", 2: "上", 3: "左"}
 DISPLAY_MODES = ("累計", "本將")
 
-# 手機版：十字座位與工具列即使在窄螢幕也維持橫向並排（Streamlit 預設會把欄位直向堆疊）
-CSS = """
-<style>
-.st-key-seat_board [data-testid="stHorizontalBlock"],
-.st-key-newgame_board [data-testid="stHorizontalBlock"],
-.st-key-seatswap_board [data-testid="stHorizontalBlock"],
-.st-key-toolbar [data-testid="stHorizontalBlock"] {
-    flex-wrap: nowrap !important;
-    gap: 0.35rem !important;
-}
-.st-key-seat_board [data-testid="stColumn"],
-.st-key-newgame_board [data-testid="stColumn"],
-.st-key-seatswap_board [data-testid="stColumn"],
-.st-key-toolbar [data-testid="stColumn"],
-.st-key-seat_board [data-testid="column"],
-.st-key-newgame_board [data-testid="column"],
-.st-key-seatswap_board [data-testid="column"],
-.st-key-toolbar [data-testid="column"] {
-    min-width: 0 !important;
-    flex: 1 1 0 !important;
-    width: auto !important;
-}
-.stButton button, .stDownloadButton button { width: 100%; min-height: 2.75rem; }
-
-/* 點擊縮放：按下去縮小一點，放開時回彈 */
-.stButton button, .stDownloadButton button {
-    transition: transform 0.14s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.14s ease !important;
-    -webkit-tap-highlight-color: transparent;
-    touch-action: manipulation;
-    will-change: transform;
-}
-.stButton button:active, .stDownloadButton button:active { transform: scale(0.94) !important; }
-.st-key-seat_board .stButton button:active { transform: scale(0.95) !important; box-shadow: inset 0 0 0 2px rgba(47, 107, 58, 0.35) !important; }
-.st-key-toolbar .stButton button:active { transform: scale(0.9) !important; }
-.st-key-seat_board .st-key-btn_mode button:active { transform: scale(0.9) !important; }
-@media (prefers-reduced-motion: reduce) {
-    .stButton button, .stDownloadButton button { transition: none !important; }
-}
-
-/* 分頁列：平均分配寬度 */
-.stTabs [data-baseweb="tab-list"] { gap: 0; }
-.stTabs [data-baseweb="tab"] { flex: 1; justify-content: center; padding: 0.5rem 0.2rem; }
-
-/* 標題列 */
-.game-header {
-    background: #2f6b3a; color: #fff; border-radius: 14px;
-    padding: 0.65rem 0.8rem; text-align: center; margin-bottom: 0.6rem;
-}
-.gh-title { font-size: 1.5rem; font-weight: 800; line-height: 1.25; }
-.gh-sub { font-size: 0.92rem; opacity: 0.95; }
-
-/* 工具列 */
-.st-key-toolbar button { min-height: 4rem; padding: 0.2rem 0.1rem; }
-.st-key-toolbar button p { white-space: pre-line; font-size: 0.74rem; line-height: 1.35; }
-
-/* 座位卡片 */
-.st-key-seat_board .stButton button {
-    min-height: 5.4rem; padding: 0.3rem 0.2rem; background: #fff;
-    border: 1.5px solid #cfcfcf; border-radius: 10px;
-}
-.st-key-seat_board .stButton button p {
-    white-space: pre-line; line-height: 1.35; font-size: 0.78rem; overflow-wrap: anywhere;
-}
-.st-key-seat_board .stButton button strong { font-size: 1.45rem; }
-.st-key-seat_board [class*="_dealer"] button { border: 2.5px solid #c62828 !important; background: #fff6f6 !important; }
-.st-key-seat_board .st-key-btn_draw button { background: #b0bec5; border: none; min-height: 4.2rem; }
-.st-key-seat_board .st-key-btn_mode button {
-    border-radius: 50%; aspect-ratio: 1 / 1; min-height: 0; background: #e0e0e0;
-    border: 3px solid #bdbdbd; padding: 0.1rem;
-}
-.st-key-seat_board .st-key-btn_mode button p { font-size: 0.7rem; }
-.wind-box {
-    background: #444; color: #fff; border-radius: 10px; font-size: 2rem;
-    font-weight: 800; text-align: center; padding: 0.3rem 0; line-height: 1.3;
-    margin-bottom: 0.3rem;
-}
-.wind-sub { text-align: center; font-size: 0.72rem; color: #666; margin-bottom: 0.3rem; }
-</style>
-"""
-st.markdown(CSS, unsafe_allow_html=True)
+# 主題：麻將綠底圖、米白按鈕、金色數字、深綠半透明資訊卡（細節見 theme.py）
+st.markdown(build_css(), unsafe_allow_html=True)
 
 
 # ------------------------------------------------------------------ 小工具
@@ -120,12 +44,17 @@ def money(n: int, sign: bool = False) -> str:
 
 
 def colored(n: int, sign: bool = True) -> str:
-    text = money(n, sign)
-    if n > 0:
-        return f":green[{text}]"
-    if n < 0:
-        return f":red[{text}]"
-    return text
+    """金色數字（HTML）。要用 st.markdown(..., unsafe_allow_html=True) 顯示；正負用 +/- 號區分。"""
+    return num_html(money(n, sign))
+
+
+def style_numbers(df: pd.DataFrame, cols: list, signed: tuple = ()):
+    """表格裡的數字欄位改成金色；沒有 jinja2（Styler 需要）時退回原本的表格。"""
+    try:
+        fmt = {c: ("{:+,}" if c in signed else "{:,}") for c in cols}
+        return df.style.set_properties(subset=cols, **{"color": GOLD, "font-weight": "700"}).format(fmt)
+    except Exception:
+        return df
 
 
 def pick_choice(label: str, options: list, key: str, default=None):
@@ -462,19 +391,37 @@ def load_from_cloud(store):
     ss["_saved_game"] = collect_state()["game"]
 
 
-def autosave(store, status, store_error=""):
-    """每次執行結束時，若資料有變就存到雲端，並在畫面最上方顯示狀態。"""
+CLOUD_ALERT = "⚠️ 雲端存檔異常，資料目前不會自動存到雲端。請到「設定 → 雲端存檔」查看原因。"
+
+
+def now_hms() -> str:
+    return datetime.now(timezone(timedelta(hours=8))).strftime("%H:%M:%S")
+
+
+def show_cloud_status(box, top, level: str, text: str, retry: bool = False):
+    """雲端狀態只顯示在「設定 → 雲端存檔」裡；只有異常時，頁面最上方才多一行小提醒。"""
+    with box.container():
+        getattr(st, level)(text)
+        if retry:
+            st.button("重新連線雲端", on_click=retry_cloud)
+    if level in ("error", "warning"):
+        top.caption(CLOUD_ALERT)
+
+
+def autosave(store, box, top, store_error=""):
+    """每次執行結束時，若資料有變就存到雲端；結果顯示在 box（設定裡的雲端存檔區）。"""
     if store is None:
         if store_error:
-            status.error(f"雲端存檔連線失敗（目前不會自動存檔）：{store_error}")
+            show_cloud_status(box, top, "error",
+                              f"雲端存檔連線失敗（目前不會自動存檔）：{store_error}")
         else:
-            status.caption("資料只存在這個網頁，重新整理會消失；請到「設定」分頁下載存檔，"
-                           "或在 Secrets 設定 Google 試算表自動存檔。")
+            show_cloud_status(box, top, "info",
+                              "尚未設定雲端存檔：資料只存在這個網頁，重新整理後會消失。"
+                              "請依 README 在 Streamlit Cloud 的 Secrets 設定 Google 試算表，"
+                              "或到「備份與還原」下載備份。")
         return
     if not ss.get("_cloud_ok"):
-        with status.container():
-            st.error(ss.get("_cloud_msg") or "雲端存檔尚未連線。")
-            st.button("重新連線雲端", on_click=retry_cloud)
+        show_cloud_status(box, top, "error", ss.get("_cloud_msg") or "雲端存檔尚未連線。", retry=True)
         return
 
     notes = []
@@ -486,7 +433,7 @@ def autosave(store, status, store_error=""):
             store.save_archive_views(ss["archive"])
             ss["_views_sig"] = views_target
         except Exception as e:
-            notes.append(f"（「過去牌局」分頁更新失敗：{e}）")
+            notes.append(f"「過去牌局」分頁更新失敗：{e}")
 
     data = collect_state()
     sig = state_signature(data)
@@ -494,17 +441,25 @@ def autosave(store, status, store_error=""):
         try:
             store.save_all(data)
         except Exception as e:
-            status.warning(f"☁️ 雲端存檔失敗，下次操作會再試一次：{e}")
+            show_cloud_status(box, top, "warning", f"雲端存檔失敗，下次操作會再試一次：{e}")
             return
         ss["_saved_sig"] = sig
+        ss["_last_saved"] = now_hms()
     # 「牌局紀錄」分頁（給人看的表）只在牌局內容變動時更新；失敗會在下次再試
     if data["game"] != ss.get("_saved_game"):
         try:
             store.save_log(ss["game"])
             ss["_saved_game"] = data["game"]
         except Exception as e:
-            notes.append(f"（資料已存，但「牌局紀錄」分頁更新失敗：{e}）")
-    status.caption("☁️ 已自動存到 Google 試算表" + "".join(notes))
+            notes.append(f"「牌局紀錄」分頁更新失敗：{e}")
+
+    if notes:
+        show_cloud_status(box, top, "warning", "資料已存到雲端，但有分頁沒更新成功：" + "；".join(notes))
+    else:
+        last = ss.get("_last_saved")
+        show_cloud_status(box, top, "success",
+                          "已連線，資料會自動存到 Google 試算表。"
+                          + (f"上次存檔：{last}" if last else "資料有變動時會自動存檔。"))
 
 
 # ------------------------------------------------------------------ 共用版面
@@ -528,6 +483,9 @@ def seat_cross(cell, center=None, key="seat_board", bottom_left=None):
                 bottom_left()
         with bottom:
             cell(0)
+
+
+STAT_NUM_COLS = ["自摸", "胡牌", "放槍", "淨額"]
 
 
 def stats_frame(g: Game, jiang) -> pd.DataFrame:
@@ -688,7 +646,7 @@ def settle_dialog(v: int):
     for i in range(4):
         r = stats[i]
         st.markdown(f"**{md_escape(g.players[i])}**　{colored(scores[i])}　"
-                    f"（摸 {r['zimo']}　胡 {r['ron']}　槍 {r['discard']}）")
+                    f"（摸 {r['zimo']}　胡 {r['ron']}　槍 {r['discard']}）", unsafe_allow_html=True)
     st.markdown("**結算（最少轉帳）**")
     transfers = settlement(scores)
     if not transfers:
@@ -716,74 +674,90 @@ try:
 except Exception as e:
     store_error = str(e)
 load_from_cloud(store)  # 新連線的第一次執行：從 Google 試算表載入資料
-status = st.empty()
+st.markdown(f"<div class='app-title'>🏠 {APP_TITLE}</div>", unsafe_allow_html=True)
+top_alert = st.empty()  # 平常是空的；只有雲端存檔異常時才會出現一行小提醒
 rules = rules_from_state()
 tab_game, tab_hist, tab_stats, tab_settings = st.tabs(
     ["🀄 目前牌局", "📜 牌局紀錄", "📊 數據統計", "⚙️ 設定"])
 
 # 先執行設定分頁，讓牌局分頁一定讀到最新設定
 with tab_settings:
-    st.subheader("玩家名單")
-    st.text_area("每行一位玩家（也可用逗號分隔）", key="roster_text", height=140,
-                 placeholder="小明\n小華\n阿美\n阿強")
-    roster = parse_roster(ss["roster_text"])
-    st.caption(f"目前共 {len(roster)} 位。開新牌局時可從折疊選單選擇。")
+    with st.expander("👥 玩家名單", expanded=False):
+        st.text_area("每行一位玩家（也可用逗號分隔）", key="roster_text", height=140,
+                     placeholder="小明\n小華\n阿美\n阿強")
+        roster = parse_roster(ss["roster_text"])
+        st.caption(f"目前共 {len(roster)} 位。開新牌局時可從折疊選單選擇。")
 
-    st.subheader("底與台")
-    c1, c2 = st.columns(2)
-    c1.number_input("底（元）", min_value=0, step=10, key="base")
-    c2.number_input("每台（元）", min_value=0, step=5, key="tai_value")
-    p1, p2, p3 = st.columns(3)
-    p1.button("100 / 20", on_click=set_preset, args=(100, 20))
-    p2.button("300 / 100", on_click=set_preset, args=(300, 100))
-    p3.button("50 / 10", on_click=set_preset, args=(50, 10))
-    st.caption("每家應付金額 = 底 + 台數 × 每台")
+    with st.expander("💰 底與台", expanded=False):
+        c1, c2 = st.columns(2)
+        c1.number_input("底（元）", min_value=0, step=10, key="base")
+        c2.number_input("每台（元）", min_value=0, step=5, key="tai_value")
+        p1, p2, p3 = st.columns(3)
+        p1.button("100 / 20", on_click=set_preset, args=(100, 20))
+        p2.button("300 / 100", on_click=set_preset, args=(300, 100))
+        p3.button("50 / 10", on_click=set_preset, args=(50, 10))
+        st.caption("每家應付金額 = 底 + 台數 × 每台")
 
-    st.subheader("莊家與連莊")
-    c3, c4 = st.columns(2)
-    c3.number_input("莊家身分台數", min_value=0, step=1, key="dealer_tai",
-                    help="莊家胡牌，或莊家付錢時加的台數")
-    c4.number_input("每次連莊加幾台", min_value=0, step=1, key="streak_tai",
-                    help="2 = 連 n 拉 n（連 1 拉 1 共 3 台含莊家 1 台）；1 = 只加連莊數")
-    st.number_input("連莊最多計到幾次（0 = 不設上限）", min_value=0, step=1,
-                    key="streak_cap")
-    st.checkbox("流局時原莊家繼續做莊", key="draw_keep_dealer")
-    st.checkbox("流局算一次連莊（累計連莊數）", key="draw_count_streak",
-                disabled=not ss["draw_keep_dealer"])
-    bonus_example = [rules.dealer_tai + n * rules.streak_tai for n in range(0, 4)]
-    st.caption("目前莊家加成台數：莊家 0 連 / 1 連 / 2 連 / 3 連 → "
-               + " / ".join(f"{t} 台" for t in bonus_example))
+    with st.expander("🀄 莊家與連莊", expanded=False):
+        c3, c4 = st.columns(2)
+        c3.number_input("莊家身分台數", min_value=0, step=1, key="dealer_tai",
+                        help="莊家胡牌，或莊家付錢時加的台數")
+        c4.number_input("每次連莊加幾台", min_value=0, step=1, key="streak_tai",
+                        help="2 = 連 n 拉 n（連 1 拉 1 共 3 台含莊家 1 台）；1 = 只加連莊數")
+        st.number_input("連莊最多計到幾次（0 = 不設上限）", min_value=0, step=1,
+                        key="streak_cap")
+        st.checkbox("流局時原莊家繼續做莊", key="draw_keep_dealer")
+        st.checkbox("流局算一次連莊（累計連莊數）", key="draw_count_streak",
+                    disabled=not ss["draw_keep_dealer"])
+        bonus_example = [rules.dealer_tai + n * rules.streak_tai for n in range(0, 4)]
+        st.caption("目前莊家加成台數：莊家 0 連 / 1 連 / 2 連 / 3 連 → "
+                   + " / ".join(f"{t} 台" for t in bonus_example))
 
-    st.subheader("台數表")
-    st.caption("可直接修改台數、新增或刪除列（表格左下角的 + 可新增）。"
-               "各地台數略有差異，請依你們的規則調整。")
-    edited = st.data_editor(
-        ss["tai_base"], num_rows="dynamic", hide_index=True, key="tai_editor",
-        column_config={
-            "名稱": st.column_config.TextColumn(required=True),
-            "台數": st.column_config.NumberColumn(min_value=0, step=1, required=True),
-            "說明": st.column_config.TextColumn(),
-        },
-    )
-    ss["tai_current"] = edited
-    st.button("還原預設台數表", on_click=reset_tai_table)
+    with st.expander("📋 台數表", expanded=False):
+        st.caption("可直接修改台數、新增或刪除列（表格左下角的 + 可新增）。"
+                   "各地台數略有差異，請依你們的規則調整。")
+        edited = st.data_editor(
+            ss["tai_base"], num_rows="dynamic", hide_index=True, key="tai_editor",
+            column_config={
+                "名稱": st.column_config.TextColumn(required=True),
+                "台數": st.column_config.NumberColumn(min_value=0, step=1, required=True),
+                "說明": st.column_config.TextColumn(),
+            },
+        )
+        ss["tai_current"] = edited
+        st.button("還原預設台數表", on_click=reset_tai_table)
 
-    st.subheader("備份與還原")
-    st.caption("全部資料備份包含：玩家名單、規則、台數表、進行中牌局與過去牌局。"
-               "換手機、重新部署或沒有設定雲端存檔時，用它就能把設定和各局數據帶走。")
-    st.download_button("下載全部資料備份 (JSON)", backup_bytes(),
-                       f"mahjong_backup_{today_str()}.json", "application/json")
-    st.file_uploader("選擇全部資料備份檔", type="json", key="backup_upload")
-    backup_ok = st.checkbox("我知道這會覆蓋目前所有資料", key="backup_ok")
-    st.button("還原全部備份", on_click=load_backup, disabled=not backup_ok)
+    with st.expander("💾 備份與還原", expanded=False):
+        st.markdown("**全部資料備份**")
+        st.caption("包含：玩家名單、規則、台數表、進行中牌局與過去牌局。"
+                   "換手機、重新部署或沒有設定雲端存檔時，用它就能把設定和各局數據帶走。")
+        st.download_button("下載全部資料備份 (JSON)", backup_bytes(),
+                           f"mahjong_backup_{today_str()}.json", "application/json")
+        st.file_uploader("選擇全部資料備份檔", type="json", key="backup_upload")
+        backup_ok = st.checkbox("我知道這會覆蓋目前所有資料", key="backup_ok")
+        st.button("還原全部備份", on_click=load_backup, disabled=not backup_ok)
 
-    st.subheader("單一牌局存檔")
-    cur_game = ss["game"]
-    if cur_game is not None:
-        st.download_button("下載目前牌局存檔 (JSON)", cur_game.to_json().encode("utf-8"),
-                           f"mahjong_game_{cur_game.no}.json", "application/json")
-    st.file_uploader("載入先前下載的單一牌局 JSON", type="json", key="upload")
-    st.button("載入", on_click=load_game)
+        st.divider()
+        st.markdown("**單一牌局存檔**")
+        cur_game = ss["game"]
+        if cur_game is not None:
+            st.download_button("下載目前牌局存檔 (JSON)", cur_game.to_json().encode("utf-8"),
+                               f"mahjong_game_{cur_game.no}.json", "application/json")
+        st.file_uploader("載入先前下載的單一牌局 JSON", type="json", key="upload")
+        st.button("載入", on_click=load_game)
+
+    with st.expander("☁️ 雲端存檔（Google 試算表）", expanded=False):
+        try:
+            sheet_link = sheet_url(st.secrets)
+        except Exception:
+            sheet_link = ""
+        if sheet_link:
+            st.link_button("📄 開啟 Google 試算表", sheet_link)
+            st.caption("試算表裡的「牌局紀錄」「過去牌局」「過去明細」是給人看的報表，"
+                       "在試算表修改不會回到 app；「mahjong_state」是 app 自己讀寫的資料，請不要手動修改。")
+        else:
+            st.caption("尚未在 Secrets 設定試算表連結（[gsheet] spreadsheet），設定方式見 README。")
+        cloud_box = st.empty()  # 連線與存檔狀態（由頁面最後的 autosave 填入）
 
 tai_table = tai_table_from_df(ss["tai_current"])
 
@@ -797,7 +771,6 @@ with tab_game:
     g = ss["game"]
 
     if g is None:
-        st.subheader("🀄 台灣麻將計台器")
         if len(roster) < 4:
             st.info("先到「設定」分頁新增至少 4 位玩家名稱，開局時就能用折疊選單選人。")
         if st.button("➕ 開始新牌局", type="primary"):
@@ -841,7 +814,7 @@ with tab_game:
                 head += f" 連{g.streak}"
             s = scores[i]
             val = money(s)
-            big = f"**:green[{val}]**" if s > 0 else (f"**:red[{val}]**" if s < 0 else f"**{val}**")
+            big = f"**{val}**"  # 粗體部分由 CSS 顯示成金色
             r = stats[i]
             label = f"{head}\n{big}\n摸 {r['zimo']}　胡 {r['ron']}　槍 {r['discard']}"
             st.button(label, key=f"seat_{pos}_{'dealer' if is_dealer else 'p'}",
@@ -882,12 +855,12 @@ with tab_hist:
         st.subheader(f"牌局 {g.no}（進行中）")
         rows = g.history_rows()
         if rows:
-            with st.container(height=420, border=True):
+            with st.container(height=420, border=True, key="card_log"):
                 for r in reversed(rows):
                     streak = f"　連{r['連莊']}" if r["連莊"] else ""
                     deltas = "　".join(f"{md_escape(n)} {colored(r[n])}" for n in g.players)
                     st.markdown(f"**第 {r['把']} 局｜{r['局']}｜莊 {md_escape(r['莊家'])}{streak}**  \n"
-                                f"{r['結果']}  \n{deltas}")
+                                f"{r['結果']}  \n{deltas}", unsafe_allow_html=True)
                     st.divider()
             hist_df = pd.DataFrame(rows)
             st.download_button("下載每把紀錄 CSV", hist_df.to_csv(index=False).encode("utf-8-sig"),
@@ -908,7 +881,7 @@ with tab_hist:
                 st.error("這局的資料損毀。")
                 ag = None
             if ag is not None:
-                st.dataframe(stats_frame(ag, None), hide_index=True)
+                st.dataframe(style_numbers(stats_frame(ag, None), STAT_NUM_COLS, ("淨額",)), hide_index=True)
                 st.caption(f"結束於 {e.get('ended', '')}")
             c1, c2 = st.columns(2)
             with c1:
@@ -932,13 +905,14 @@ with tab_stats:
         scores = g.scope_scores(jiang)
         hands = g.hands_played(jiang)
         st.caption(f"牌局 {g.no}" + ("" if jiang is None else f"　第 {g.jiang} 將") + f"　共 {hands} 局")
-        st.dataframe(stats_frame(g, jiang), hide_index=True)
+        st.dataframe(style_numbers(stats_frame(g, jiang), STAT_NUM_COLS, ("淨額",)), hide_index=True)
         st.caption("自摸＝自己摸牌胡；胡牌＝別人放槍給你胡；放槍＝你放槍給別人胡。")
 
         for i in range(4):
             r = stats[i]
-            with st.container(border=True):
-                st.markdown(f"**{md_escape(g.players[i])}**　淨額 {colored(scores[i])}")
+            with st.container(key=f"card_stat_{i}"):
+                st.markdown(f"**{md_escape(g.players[i])}**　淨額 {colored(scores[i])}",
+                            unsafe_allow_html=True)
                 lines = [
                     f"- 自摸 {r['zimo']} 次，共贏 {money(r['zimo_amt'])}",
                     f"- 胡牌 {r['ron']} 次，共贏 {money(r['ron_amt'])}",
@@ -954,7 +928,7 @@ with tab_stats:
         trend = g.trend(jiang)
         if len(trend) > 1:
             st.subheader("積分走勢")
-            st.line_chart(pd.DataFrame(trend, columns=g.players))
+            st.line_chart(pd.DataFrame(trend, columns=g.players), color=CHART_COLORS)
 
 # ------------------------------------------------------------------ 雲端自動存檔（放在最後，涵蓋本次所有變動）
-autosave(store, status, store_error)
+autosave(store, cloud_box, top_alert, store_error)

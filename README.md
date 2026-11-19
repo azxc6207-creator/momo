@@ -1,4 +1,4 @@
-# 台灣麻將計台器
+# 🏠 鼠家麻將欸波
 
 依台灣 16 張麻將規則的計台、連莊、金額結算工具（Streamlit，手機優先）。
 
@@ -15,11 +15,16 @@
 - **牌局紀錄**：進行中牌局的每把紀錄（可下載 CSV），以及過去已結束的牌局，可「繼續這局」或刪除。
 - **數據統計**：每位玩家的自摸／胡牌／放槍次數與金額、被自摸金額、胡牌率與放槍率、積分走勢圖；
   可切換「累計」或「本將」。
-- **設定**：玩家名單、底與台、莊家與連莊規則、台數表。
+- **設定**：每個大項各是一個折疊框——玩家名單、底與台、莊家與連莊、台數表、備份與還原、雲端存檔。
+  雲端存檔框裡有「開啟 Google 試算表」連結與連線／存檔狀態；平常畫面最上方不會顯示任何雲端字樣，
+  只有雲端存檔異常時才會多一行小提醒。
 - **備份與還原**：「下載全部資料備份」一個檔案就包含玩家名單、規則、台數表、進行中牌局與過去牌局；
   換手機、重新部署或沒設定雲端存檔時，用「還原全部備份」就能全部帶回來。
   另外也能單獨下載、載入某一局的 JSON。
 - **按鈕手感**：點擊時按鈕會縮小一點、放開回彈（純 CSS）。
+- **外觀**：麻將綠底圖（`assets/bg_phone.jpg`，手機比例版）、米白色按鈕、金色數字、深綠色半透明資訊卡；
+  配色與 CSS 集中在 `theme.py`，Streamlit 本身的深色主題在 `.streamlit/config.toml`。
+  沒放在卡片裡的說明文字會加一層深色底，避免壓在背景的麻將牌上看不清楚。
 - **選單**：所有選擇都是「點開才出現一排按鈕」的折疊式，不使用下拉選單。
 - **Google 試算表自動存檔**：每次操作自動存，關掉網頁再開會自動載回（需先完成下方設定）。
 
@@ -56,8 +61,8 @@ pytest -q
 
 ## 部署到 Streamlit Cloud
 1. 在 GitHub 建立新 repository，把本資料夾所有檔案上傳
-   （`app.py`、`mahjong_core.py`、`cloud_store.py`、`requirements.txt`、`.gitignore`、`README.md`、
-   `.streamlit/config.toml`；`secrets.toml.example` 可一併上傳，裡面只有範例沒有真金鑰）。
+   （`app.py`、`mahjong_core.py`、`cloud_store.py`、`theme.py`、`assets/bg_phone.jpg`、`requirements.txt`、
+   `.gitignore`、`README.md`、`.streamlit/config.toml`；`secrets.toml.example` 可一併上傳，裡面只有範例沒有真金鑰）。
 2. 前往 https://share.streamlit.io 以 GitHub 帳號登入。
 3. 點 **Create app** → 選擇該 repository 與分支，Main file path 填 `app.py`。
 4. 點 **Deploy**。要啟用自動存檔，接著做下一節的 Secrets 設定。
@@ -71,7 +76,8 @@ pytest -q
    （金鑰檔裡的 `client_email`）加為**編輯者**。
 4. 打開 Streamlit Cloud 的 App → Settings → **Secrets**，照 `secrets.toml.example`
    貼上：試算表網址，以及金鑰檔裡的各欄位。`private_key` 內的換行要保留成 `\n`。
-5. 儲存後 app 會重新啟動。畫面最上方出現「☁️ 已自動存到 Google 試算表」就成功了。
+5. 儲存後 app 會重新啟動。到「設定」→「☁️ 雲端存檔」展開，看到「已連線，資料會自動存到 Google 試算表」
+   就成功了；同一個框裡也有「開啟 Google 試算表」的連結。
 
 試算表裡會出現四個分頁：
 - `mahjong_state`：app 自動讀寫的資料（進行中牌局、過去牌局、玩家名單、規則、台數表），請不要手動修改。
@@ -92,3 +98,7 @@ pytest -q
 - 十字座位在手機上是靠自訂 CSS 讓欄位維持橫向並排，卡片內的換行與大字也是用 CSS 調整，
   若日後 Streamlit 改版，版面可能需要微調。
 - 折疊式選單使用 `st.pills`，需要 Streamlit 1.40 以上。
+- 背景圖是用 `position: fixed` 的偽元素鋪在最底層，並以手機比例（約 0.46）裁切；
+  電腦等寬螢幕會改成依高度縮放並置中、兩側補綠底，內容欄也跟著變窄。
+  按鈕、分頁、折疊框的配色是針對 Streamlit 目前的元素名稱（`data-testid`）寫的 CSS，
+  日後 Streamlit 改版時若有地方顏色跑掉，改 `theme.py` 即可。

@@ -122,3 +122,14 @@ def connect(secrets):
     ref = str(ref).strip()
     sh = client.open_by_url(ref) if ref.startswith("http") else client.open_by_key(ref)
     return SheetsStore(sh)
+
+
+def sheet_url(secrets) -> str:
+    """Secrets 裡設定的試算表網址（只填了試算表 ID 時，會補成完整網址）；沒設定回傳空字串。"""
+    try:
+        ref = str(secrets["gsheet"]["spreadsheet"]).strip()
+    except Exception:
+        return ""
+    if not ref:
+        return ""
+    return ref if ref.startswith("http") else f"https://docs.google.com/spreadsheets/d/{ref}"

@@ -119,3 +119,16 @@ def test_save_archive_views_writes_and_clears():
     assert len(store.sh.sheets[DETAIL_SHEET].rows) == 4
     store.save_archive_views([])                          # 全部刪除 → 兩頁清空
     assert store.sh.sheets[ARCHIVE_SHEET].rows == [] and store.sh.sheets[DETAIL_SHEET].rows == []
+
+
+def test_sheet_url_from_url_or_id():
+    from cloud_store import sheet_url
+    url = "https://docs.google.com/spreadsheets/d/abc123/edit"
+    assert sheet_url({"gsheet": {"spreadsheet": f"  {url}  "}}) == url
+    assert sheet_url({"gsheet": {"spreadsheet": "abc123"}}) == "https://docs.google.com/spreadsheets/d/abc123"
+    assert sheet_url({}) == "" and sheet_url({"gsheet": {"spreadsheet": ""}}) == ""
+
+    class Boom(dict):
+        def __getitem__(self, k):
+            raise FileNotFoundError("no secrets")
+    assert sheet_url(Boom()) == ""
