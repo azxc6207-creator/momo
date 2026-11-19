@@ -7,8 +7,9 @@ from datetime import datetime, timedelta, timezone
 import pandas as pd
 import streamlit as st
 
+from charts import bar_spec, pie_spec
 from cloud_store import connect, sheet_url
-from mahjong_core import (DEFAULT_TAI_TABLE, WINDS, ZIMO, Game, Rules, check_conflicts,
+from mahjong_core import (aggregate_players, DEFAULT_TAI_TABLE, WINDS, ZIMO, Game, Rules, check_conflicts,
                           compute_hand_tai, settlement)
 from theme import CHART_COLORS, GOLD, build_css, num_html
 
@@ -308,7 +309,7 @@ def get_store():
     """未設定 Secrets → None；設定了卻連不上 → 丟出例外。"""
     try:
         secrets = st.secrets
-        secrets["gsheet"]  # 沒有 secrets 檔或沒這個區段時，會在這裡失敗
+        _ = secrets["gsheet"]  # 沒有 secrets 檔或沒這個區段時，會在這裡失敗（不可寫成單獨一行，會被 Streamlit 顯示出來）
     except Exception:
         return None
     return connect(secrets)
@@ -497,6 +498,24 @@ def stats_frame(g: Game, jiang) -> pd.DataFrame:
         "放槍": [r["discard"] for r in s],
         "淨額": g.scope_scores(jiang),
     })
+
+
+def all_games() -> list:
+    """進行中的牌局 + 所有已結束牌局（讀不出來的存檔略過）。"""
+    games = [ss["game"]] if ss.get("game") is not None else []
+    for e in ss["archive"]:
+        try:
+            games.append(Game.from_json(e["game"]))
+        except Exception:
+            continue
+    return games
+
+
+def show_chart(spec: dict):
+    try:
+        st.vega_lite_chart(spec, use_container_width=True)
+    except TypeError:  # 新版 Streamlit 移除了 use_container_width
+        st.vega_lite_chart(spec)
 
 
 # ------------------------------------------------------------------ 對話視窗
@@ -893,42 +912,62 @@ with tab_hist:
             st.button("刪除這局", key=f"arc_del_{idx}", on_click=delete_archived,
                       args=(idx,), disabled=not ok)
 
-# ------------------------------------------------------------------ 數據統計
+# ------------------------------------------------------------------ 數據統計（所有牌局合計）
 with tab_stats:
-    g = ss["game"]
-    if g is None:
-        st.info("尚未開始牌局。開始後，這裡會顯示每位玩家的自摸、胡牌、放槍次數與金額。")
+    games = all_games()
+    agg = aggregate_players(games)
+    if not agg:
+        st.info("還沒有牌局資料。開始並記錄牌局後，這裡會顯示每位玩家所有牌局的合計。")
     else:
-        scope_name = st.radio("範圍", list(DISPLAY_MODES), horizontal=True, key="stats_scope")
-        jiang = None if scope_name == DISPLAY_MODES[0] else g.jiang
-        stats = g.stats(jiang)
-        scores = g.scope_scores(jiang)
-        hands = g.hands_played(jiang)
-        st.caption(f"牌局 {g.no}" + ("" if jiang is None else f"　第 {g.jiang} 將") + f"　共 {hands} 局")
-        st.dataframe(style_numbers(stats_frame(g, jiang), STAT_NUM_COLS, ("淨額",)), hide_index=True)
-        st.caption("自摸＝自己摸牌胡；胡牌＝別人放槍給你胡；放槍＝你放槍給別人胡。")
+        st.caption(f"合計 {len(games)} 場牌局（含進行中），共 {len(agg)} 位玩家；各場依玩家名稱合併。")
+        df = pd.DataFrame({
+            "玩家": [a["name"] for a in agg],
+            "場數": [a["games"] for a in agg],
+            "自摸": [a["zimo"] for a in agg],
+            "胡牌": [a["ron"] for a in agg],
+            "放槍": [a["discard"] for a in agg],
+            "流局": [a["draws"] for a in agg],
+            "總金額": [a["net"] for a in agg],
+        })
+        st.dataframe(style_numbers(df, ["自摸", "胡牌", "放槍", "流局", "總金額"], ("總金額",)),
+                     hide_index=True)
+        st.caption("自摸＝自己摸牌胡；胡牌＝別人放槍給你胡；放槍＝你放槍給別人胡；"
+                   "流局＝你參與的牌局中流局的次數。")
 
-        for i in range(4):
-            r = stats[i]
+        st.subheader("自摸／胡牌／放槍比率")
+        with st.container(key="pies"):
+            specs = [(a["name"], pie_spec(a["name"], a["zimo"], a["ron"], a["discard"])) for a in agg]
+            for k in range(0, len(specs), 2):
+                cols = st.columns(2)
+                for col, (name, spec) in zip(cols, specs[k:k + 2]):
+                    with col:
+                        if spec is None:
+                            st.markdown(f"**{md_escape(name)}**")
+                            st.caption("尚無自摸、胡牌或放槍")
+                        else:
+                            show_chart(spec)
+
+        st.subheader("玩家總金額")
+        show_chart(bar_spec([a["name"] for a in agg], [a["net"] for a in agg]))
+
+        st.subheader("玩家明細")
+        for i, a in enumerate(agg):
             with st.container(key=f"card_stat_{i}"):
-                st.markdown(f"**{md_escape(g.players[i])}**　淨額 {colored(scores[i])}",
+                st.markdown(f"**{md_escape(a['name'])}**　總金額 {colored(a['net'])}",
                             unsafe_allow_html=True)
                 lines = [
-                    f"- 自摸 {r['zimo']} 次，共贏 {money(r['zimo_amt'])}",
-                    f"- 胡牌 {r['ron']} 次，共贏 {money(r['ron_amt'])}",
-                    f"- 放槍 {r['discard']} 次，共輸 {money(r['discard_amt'])}",
-                    f"- 被自摸 {r['zimo_paid']} 次，共輸 {money(r['zimo_paid_amt'])}",
+                    f"- 自摸 {a['zimo']} 次，共贏 {money(a['zimo_amt'])}",
+                    f"- 胡牌 {a['ron']} 次，共贏 {money(a['ron_amt'])}",
+                    f"- 放槍 {a['discard']} 次，共輸 {money(a['discard_amt'])}",
+                    f"- 被自摸 {a['zimo_paid']} 次，共輸 {money(a['zimo_paid_amt'])}",
+                    f"- 流局 {a['draws']} 次",
                 ]
-                if r["adjust"]:
-                    lines.append(f"- 手動調整 {money(r['adjust'], True)}")
-                if hands:
-                    lines.append(f"- 胡牌率 {r['wins'] / hands:.0%}　放槍率 {r['discard'] / hands:.0%}")
+                if a["adjust"]:
+                    lines.append(f"- 手動調整 {money(a['adjust'], True)}")
+                if a["hands"]:
+                    lines.append(f"- 胡牌率 {(a['zimo'] + a['ron']) / a['hands']:.0%}　"
+                                 f"放槍率 {a['discard'] / a['hands']:.0%}")
                 st.markdown("\n".join(lines))
-
-        trend = g.trend(jiang)
-        if len(trend) > 1:
-            st.subheader("積分走勢")
-            st.line_chart(pd.DataFrame(trend, columns=g.players), color=CHART_COLORS)
 
 # ------------------------------------------------------------------ 雲端自動存檔（放在最後，涵蓋本次所有變動）
 autosave(store, cloud_box, top_alert, store_error)

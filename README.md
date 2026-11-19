@@ -13,8 +13,10 @@
   - 調整位置：先點一位、再點另一位互換座位，積分與紀錄跟著玩家走。
   - 統計/結算：列出各家積分與「最少轉帳」的結算方式，並可結束牌局（歸檔）。
 - **牌局紀錄**：進行中牌局的每把紀錄（可下載 CSV），以及過去已結束的牌局，可「繼續這局」或刪除。
-- **數據統計**：每位玩家的自摸／胡牌／放槍次數與金額、被自摸金額、胡牌率與放槍率、積分走勢圖；
-  可切換「累計」或「本將」。
+- **數據統計**：合併「進行中＋所有已結束牌局」，依玩家名稱加總（不分單一牌局）：
+  表格列出場數、自摸、胡牌、放槍、流局與總金額；每位玩家一張「自摸／胡牌／放槍」圓餅圖（手機兩個一排）、
+  玩家總金額長條圖，以及各玩家明細（贏／輸金額、被自摸、胡牌率與放槍率）。
+  流局＝該玩家參與的牌局中流局的次數。同名玩家視為同一人。
 - **設定**：每個大項各是一個折疊框——玩家名單、底與台、莊家與連莊、台數表、備份與還原、雲端存檔。
   雲端存檔框裡有「開啟 Google 試算表」連結與連線／存檔狀態；平常畫面最上方不會顯示任何雲端字樣，
   只有雲端存檔異常時才會多一行小提醒。
@@ -61,7 +63,7 @@ pytest -q
 
 ## 部署到 Streamlit Cloud
 1. 在 GitHub 建立新 repository，把本資料夾所有檔案上傳
-   （`app.py`、`mahjong_core.py`、`cloud_store.py`、`theme.py`、`assets/bg_phone.jpg`、`requirements.txt`、
+   （`app.py`、`mahjong_core.py`、`cloud_store.py`、`charts.py`、`theme.py`、`assets/bg_phone.jpg`、`requirements.txt`、
    `.gitignore`、`README.md`、`.streamlit/config.toml`；`secrets.toml.example` 可一併上傳，裡面只有範例沒有真金鑰）。
 2. 前往 https://share.streamlit.io 以 GitHub 帳號登入。
 3. 點 **Create app** → 選擇該 repository 與分支，Main file path 填 `app.py`。

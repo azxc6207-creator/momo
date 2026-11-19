@@ -94,7 +94,8 @@ h1, h2, h3, h4, .stMarkdown, [data-testid="stCaptionContainer"] { text-shadow: 0
 .st-key-seat_board [data-testid="stHorizontalBlock"],
 .st-key-newgame_board [data-testid="stHorizontalBlock"],
 .st-key-seatswap_board [data-testid="stHorizontalBlock"],
-.st-key-toolbar [data-testid="stHorizontalBlock"] {
+.st-key-toolbar [data-testid="stHorizontalBlock"],
+.st-key-pies [data-testid="stHorizontalBlock"] {
     flex-wrap: nowrap !important;
     gap: 0.35rem !important;
 }
@@ -102,6 +103,8 @@ h1, h2, h3, h4, .stMarkdown, [data-testid="stCaptionContainer"] { text-shadow: 0
 .st-key-newgame_board [data-testid="stColumn"],
 .st-key-seatswap_board [data-testid="stColumn"],
 .st-key-toolbar [data-testid="stColumn"],
+.st-key-pies [data-testid="stColumn"],
+.st-key-pies [data-testid="column"],
 .st-key-seat_board [data-testid="column"],
 .st-key-newgame_board [data-testid="column"],
 .st-key-seatswap_board [data-testid="column"],

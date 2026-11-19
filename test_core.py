@@ -252,3 +252,20 @@ def test_old_save_without_new_fields_still_loads():
     assert old.no == 1 and old.jiang == 1 and old.created == ""
     assert old.stats()[0]["zimo"] == 1 and old.scope_scores(1) == old.scores
     assert old.undo() and old.jiang == 1
+
+
+def test_aggregate_players_merges_games_by_name():
+    from mahjong_core import aggregate_players
+    g1 = Game(players=["A", "B", "C", "D"], rules=Rules())
+    g1.apply_win(1, "自摸", 2)
+    g1.apply_draw()
+    g2 = Game(players=["B", "A", "E", "F"], rules=Rules())
+    g2.apply_win(1, "放槍", 1, discarder=0)
+    agg = {a["name"]: a for a in aggregate_players([g1, None, g2])}
+    assert set(agg) == set("ABCDEF")
+    assert agg["B"]["zimo"] == 1 and agg["B"]["games"] == 2 and agg["B"]["draws"] == 1
+    assert agg["A"]["ron"] == 1 and agg["B"]["discard"] == 1
+    assert sum(a["net"] for a in agg.values()) == 0
+    assert aggregate_players([]) == []
+    nets = [a["net"] for a in aggregate_players([g1, g2])]
+    assert nets == sorted(nets, reverse=True)

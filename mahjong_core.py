@@ -400,3 +400,30 @@ class Game:
         d = json.loads(text)
         rules = Rules(**d.pop("rules"))
         return cls(rules=rules, **d)
+
+
+def aggregate_players(games: list) -> list:
+    """把多場牌局依玩家名稱合併成累計戰績（含進行中與已結束的牌局）。
+
+    回傳依淨額由高到低排序的 dict 列表：
+    name, games, hands, draws（流局）, zimo, ron, discard, zimo_paid, *_amt, adjust, net。
+    流局＝該玩家參與的牌局中發生的流局次數。
+    """
+    keys = ("zimo", "zimo_amt", "ron", "ron_amt", "discard", "discard_amt",
+            "zimo_paid", "zimo_paid_amt", "adjust", "net")
+    acc: dict = {}
+    for g in games:
+        if g is None:
+            continue
+        st_ = g.stats(None)
+        draws = sum(1 for h in g.history if h["type"] == "draw")
+        hands = g.hands_played(None)
+        for i, name in enumerate(g.players):
+            a = acc.setdefault(name, dict(name=name, games=0, hands=0, draws=0,
+                                          **dict.fromkeys(keys, 0)))
+            a["games"] += 1
+            a["hands"] += hands
+            a["draws"] += draws
+            for k in keys:
+                a[k] += st_[i][k]
+    return sorted(acc.values(), key=lambda a: -a["net"])
